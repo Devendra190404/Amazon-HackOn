@@ -11,5 +11,5 @@ export default withNextVideo(nextConfig, {
       },
     },
   },
-  folder: 'videos',
+  folder: 'videos'
 });

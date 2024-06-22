@@ -1,48 +1,74 @@
 'use client';
 
-import { useState } from 'react';
-import { Button } from '@nextui-org/react';
 import { Upload, message } from 'antd';
-import { UploadCloudIcon } from 'lucide-react';
-import Link from 'next/link';
-import { upload } from '@vercel/blob/client';
 import type { UploadFile, UploadChangeParam } from 'antd/lib/upload/interface';
 import type { PutBlobResult } from '@vercel/blob';
+import { Button, Card, CardFooter } from '@nextui-org/react';
+import { upload } from '@vercel/blob/client';
+import { Loader2Icon, Play, UploadCloudIcon } from 'lucide-react';
+import Link from 'next/link';
+import { useState, useRef } from 'react';
+import { FFmpeg } from '@ffmpeg/ffmpeg';
+import { fetchFile } from '@ffmpeg/util';
+import Image from 'next/image';
+import { io } from 'socket.io-client';
+import { Item } from '@/components/VideoPlayer';
+import Dragger from 'antd/es/upload/Dragger';
+
+
+const ffmpeg = new FFmpeg();
 
 export default function AvatarUploadPage() {
-  const [blob, setBlob] = useState<PutBlobResult | null>(null);
+  const [blob, setBlob] = useState<(PutBlobResult & { thumbnail?: string }) | null>(null);
 
   const handleFileChange = async (info: UploadChangeParam<UploadFile>) => {
     const { file } = info;
-
     if (file.status === 'done') {
-      if (!file.url && !file.preview) {
-        file.preview = await getBase64(file.originFileObj as File);
-      }
-
-      try {
+      
+      if (file?.type?.split('/')[0] === 'video') {
+        await ffmpeg.load();
         const newBlob = await upload(file.name, file.originFileObj as File, {
           access: 'public',
           handleUploadUrl: '/api/upload',
           multipart: true,
           contentType: file.type,
         });
-        setBlob(newBlob);
-        message.success('File uploaded successfully');
-      } catch (error) {
-        console.error('Error uploading file:', error);
-        message.error('Failed to upload file');
+        await ffmpeg.writeFile(file.name, await fetchFile(file.originFileObj as File));
+        const outputFilename = `${file.name.split('.')?.at(-2)}.png`;
+        await ffmpeg.exec(['-i', file.name, '-ss', `0`, '-frames:v', '1', outputFilename]);
+        const data = await ffmpeg.readFile(outputFilename);
+
+        const thumbnail = await upload(`.thumbnail/${outputFilename}`, (data as Uint8Array).buffer, {
+          access: 'public',
+          handleUploadUrl: '/api/upload',
+          multipart: true,
+        });
+        setBlob({ ...newBlob, thumbnail: thumbnail.url });
+      } else if (file?.type?.split('/')[0] === 'image') {
+        const reader = new FileReader();
+        reader.readAsDataURL(file.originFileObj as File);
+        const socket = io(process.env.NEXT_PUBLIC_SOCKET_URL as string, {
+          transports: ['websocket'],
+        });
+
+        reader.onloadend = async () => {
+          const base64 = reader.result;
+          socket?.emit('send_data', { data: base64 });
+        };
+
+        socket?.on('data_processed', (data: Item[]) => {
+          // UI need to be made for this
+          console.log(data);
+        });
+
+        setTimeout(() => {
+          socket?.disconnect();
+        }, 10000);
+      } else {
+        alert('Invalid file type');
       }
     }
   };
-
-  const getBase64 = (file: File): Promise<string> =>
-    new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.readAsDataURL(file);
-      reader.onload = () => resolve(reader.result as string);
-      reader.onerror = error => reject(error);
-    });
 
   return (
     <div
@@ -81,34 +107,64 @@ export default function AvatarUploadPage() {
             </p>
           </div>
           <div>
-            <Upload
-              className='text-white flex flex-col'
-              listType='picture-card'
-              onChange={handleFileChange}
-              showUploadList={{ showPreviewIcon: false, showRemoveIcon: false }}
-            >
-              <div className='flex flex-col justify-center'>
-                <UploadCloudIcon />
-                <div className='text-sm'>
-                  Click or drag
-                  <br /> file to upload
-                </div>
-              </div>
-            </Upload>
+            <div className='w-[40%] h-full'>
+              <Dragger
+                className='text-white rounded-lg bg-black hover:bg-zinc-800 transition-colors'
+                listType='text'
+                onChange={handleFileChange}
+                showUploadList={{ showPreviewIcon: true, showRemoveIcon: false }}
+              >
+                  <UploadCloudIcon size={36}/>
+                  <div className='text-sm'>
+                    Click or drag
+                    <br /> file to upload
+                  </div>
+              </Dragger>
+            </div>
+            {/* UI for Image upload results need to be made */}
+
             {blob && (
-              <div className='mt-4'>
-                <Link
-                  href={{
-                    pathname: '/stream',
-                    query: {
-                      url: blob.url,
-                      pathname: blob.pathname,
-                    },
-                  }}
+              <Link
+                href={{
+                  pathname: '/stream',
+                  query: {
+                    url: blob?.url,
+                    pathname: blob?.pathname,
+                    size: 'NA',
+                    uploadedAt: 'Now',
+                  },
+                }}
+              >
+                <Card
+                  key={blob?.pathname}
+                  isHoverable
+                  isPressable
+                  radius='lg'
+                  className='border-none w-52 justify-center bg-cyan-600 hover:scale-110'
                 >
-                  <Button className='w-[12%] h-12 bg-cyan-600'>Watch Now</Button>
-                </Link>
-              </div>
+                  <div className='relative'>
+                    <Image
+                      // loading='lazy'
+                      alt={blob?.pathname ?? 'Video'}
+                      className='object-cover'
+                      height={500}
+                      src={
+                        blob?.thumbnail ??
+                        'https://d8it4huxumps7.cloudfront.net/uploads/images/663c619d69486_hackon-with-amazon-season-4.jpg?d=1920x1920'
+                      }
+                      width={500}
+                    />
+                    <div className='absolute inset-0 flex z-10 items-center justify-center rounded-xl bg-black bg-opacity-50 opacity-0 hover:opacity-100 transition-opacity'>
+                      <Play size={48} color='white' />
+                    </div>
+                  </div>
+                  <CardFooter className='justify-between'>
+                    <p className='text-small text-white text-wrap'>
+                      {blob?.pathname.split('/').pop()?.split('.')?.at(-2)}
+                    </p>
+                  </CardFooter>
+                </Card>
+              </Link>
             )}
           </div>
         </main>
