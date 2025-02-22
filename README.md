@@ -2,7 +2,6 @@
 
 
 
-## [Video presentation](https://youtu.be/21yOeJ--X4c)
  
 ## Table of Contents
 - [Introduction](#introduction)
